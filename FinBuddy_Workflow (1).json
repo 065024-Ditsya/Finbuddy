@@ -1,0 +1,120 @@
+{
+  "name": "FinBuddy - Financial Literacy Nudge Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "FinBuddy Check-in",
+        "formDescription": "Tell FinBuddy about your spending and ask any money question.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "Name", "requiredField": true },
+            { "fieldLabel": "Email", "placeholder": "abc@fsm.ac.in", "requiredField": true },
+            { "fieldLabel": "Monthly Budget (INR)", "requiredField": true },
+            { "fieldLabel": "This Week's Biggest Expense (INR)", "requiredField": true },
+            { "fieldLabel": "Expense Category", "fieldType": "dropdown", "fieldOptions": { "values": [
+              { "option": "Food/Delivery" },
+              { "option": "Travel" },
+              { "option": "Shopping" },
+              { "option": "Subscriptions" },
+              { "option": "Other" }
+            ]}, "requiredField": true },
+            { "fieldLabel": "Question", "fieldType": "textarea", "placeholder": "e.g. Am I overspending this week?", "requiredField": true }
+          ]
+        },
+        "options": { "respondWithOptions": { "values": { "formSubmittedText": "Thanks! FinBuddy is thinking..." } } }
+      },
+      "id": "form-trigger-1",
+      "name": "On form submission",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [-400, 0]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.Question }}",
+        "options": {
+          "systemMessage": "=You are FinBuddy, a friendly financial-literacy coach for college students. Student: {{ $json.Name }} | Email: {{ $json.Email }} | Monthly Budget: INR {{ $json['Monthly Budget (INR)'] }} | This Week's Biggest Expense: INR {{ $json[\"This Week's Biggest Expense (INR)\"] }} in category {{ $json['Expense Category'] }}.\n\nDO NOT answer money-advice questions from your own knowledge. ALWAYS call the tool 'AnalyzeSpendingAndAdvise' first, passing the student's budget, expense amount, and category, and base your reply on its output. Keep replies short (3-4 sentences), encouraging, never judgmental, and end with one concrete, bite-sized action the student can take today. If the tool flags overspending, suggest a simple rule of thumb (e.g. 50/30/20) rather than a lecture."
+        }
+      },
+      "id": "ai-agent-1",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [-100, 0]
+    },
+    {
+      "parameters": {
+        "model": "qwen3.5:0.8b"
+      },
+      "id": "ollama-chat-model-1",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [-200, 220],
+      "credentials": { "ollamaApi": { "name": "Ollama account" } }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('On form submission').item.json.Email }}",
+        "tableName": "n8n_chat_histories",
+        "contextWindowLength": 8
+      },
+      "id": "postgres-memory-1",
+      "name": "Postgres Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.1,
+      "position": [0, 220],
+      "credentials": { "postgres": { "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "messageAModel",
+        "modelId": "granite4.1:3b",
+        "messages": {
+          "values": [
+            {
+              "content": "=A student has a monthly budget of INR {{ $('On form submission').item.json['Monthly Budget (INR)'] }}. Their biggest expense this week was INR {{ $('On form submission').item.json[\"This Week's Biggest Expense (INR)\"] }} in the category '{{ $('On form submission').item.json['Expense Category'] }}'. Calculate what percentage of their monthly budget this single expense represents, state clearly whether this is a healthy or risky proportion for one week, and give ONE short, practical financial-literacy tip relevant to that category (e.g. food delivery, subscriptions, travel).",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ollama-tool-1",
+      "name": "AnalyzeSpendingAndAdvise",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [200, 220],
+      "credentials": { "ollamaApi": { "name": "Ollama account" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO student_budgets (email, name, monthly_budget, last_expense, category, points, updated_at)\nVALUES ('{{ $(\"On form submission\").item.json.Email }}', '{{ $(\"On form submission\").item.json.Name }}', {{ $(\"On form submission\").item.json[\"Monthly Budget (INR)\"] }}, {{ $(\"On form submission\").item.json[\"This Week's Biggest Expense (INR)\"] }}, '{{ $(\"On form submission\").item.json[\"Expense Category\"] }}', 0, now())\nON CONFLICT (email) DO UPDATE SET\n  last_expense = EXCLUDED.last_expense,\n  category = EXCLUDED.category,\n  points = student_budgets.points + CASE WHEN EXCLUDED.last_expense <= student_budgets.monthly_budget * 0.1 THEN 5 ELSE 0 END,\n  updated_at = now();"
+      },
+      "id": "postgres-log-1",
+      "name": "Log Check-in & Update Points",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-100, 400],
+      "credentials": { "postgres": { "name": "Postgres account" } }
+    }
+  ],
+  "connections": {
+    "On form submission": {
+      "main": [[{ "node": "AI Agent", "type": "main", "index": 0 }, { "node": "Log Check-in & Update Points", "type": "main", "index": 0 }]]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [[{ "node": "AI Agent", "type": "ai_memory", "index": 0 }]]
+    },
+    "AnalyzeSpendingAndAdvise": {
+      "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]]
+    }
+  }
+}
